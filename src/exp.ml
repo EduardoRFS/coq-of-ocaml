@@ -549,12 +549,12 @@ let rec of_expression (typ_vars : Name.t Name.Map.t) (e : expression)
       },
       e
     ) ->
-    let* x = Name.of_ident true x in
+    let* x = Name.of_optional_ident true x in
     PathName.of_path_with_convert false path >>= fun path_name ->
     of_expression typ_vars e >>= fun e ->
     return (LetModuleUnpack (x, path_name, e))
   | Texp_letmodule (x, _, _, module_expr, e) ->
-    let* x = Name.of_ident true x in
+    let* x = Name.of_optional_ident true x in
     push_env (of_module_expr typ_vars module_expr None >>= fun value ->
     set_env e.exp_env (
     push_env (of_expression typ_vars e >>= fun e ->
@@ -646,14 +646,11 @@ let rec of_expression (typ_vars : Name.t Name.Map.t) (e : expression)
   else
     return e))
 
-and of_match
-  (typ_vars : Name.t Name.Map.t)
-  (e : t)
-  (cases : case list)
-  (is_gadt_match : bool)
-  (do_cast_results : bool)
-  (is_with_default_case : bool)
-  : t Monad.t =
+and of_match :
+  type pattern_kind.
+  Name.t Name.Map.t -> t -> pattern_kind case list -> bool -> bool -> bool ->
+  t Monad.t =
+  fun typ_vars e cases is_gadt_match do_cast_results is_with_default_case ->
   (cases |> Monad.List.filter_map (fun {c_lhs; c_guard; c_rhs} ->
     set_loc (Loc.of_location c_lhs.pat_loc) (
     let* bound_vars =
@@ -748,12 +745,13 @@ and of_match
 (** Generate a variable and a "match" on this variable from a list of
     patterns. *)
 and open_cases
+  (type pattern_kind) = fun
   (typ_vars : Name.t Name.Map.t)
-  (cases : case list)
+  (cases : pattern_kind case list)
   (is_gadt_match : bool)
   (do_cast_results : bool)
   (is_with_default_case : bool)
-  : (Name.t * t) Monad.t =
+  : (Name.t * t) Monad.t ->
   let name = Name.FunctionParameter in
   let e = Variable (MixedPath.of_name name, []) in
   let* e =
@@ -961,29 +959,29 @@ and of_module_expr
           reason
         )
     end
-  | Tmod_functor (ident, _, module_type_arg, e) ->
+  | Tmod_functor (parameter, e) ->
     let* e = of_module_expr typ_vars e None in
-    begin match module_type_arg with
-    | None -> return e
-    | Some module_type_arg ->
-      let* x = Name.of_ident false ident in
+    begin match parameter with
+    | Named (ident, _, module_type_arg) ->
+      let* x = Name.of_optional_ident false ident in
       let* module_type_arg = ModuleTyp.of_ocaml module_type_arg in
       return (Functor (x, ModuleTyp.to_typ module_type_arg, e))
+    | Unit -> return e
     end
   | Tmod_apply (e1, e2, _) ->
     let e1_mod_type = e1.mod_type in
     let expected_module_typ_for_e2 =
       match e1_mod_type with
-      | Mty_functor (_, module_typ_arg, _) -> module_typ_arg
+      | Mty_functor (Named (_, module_typ_arg), _) -> Some module_typ_arg
       | _ -> None in
     let module_typ_for_application =
       match e1_mod_type with
-      | Mty_functor (_, _, module_typ_result) -> Some module_typ_result
+      | Mty_functor (_, module_typ_result) -> Some module_typ_result
       | _ -> None in
     of_module_expr typ_vars e1 None >>= fun e1 ->
     let* es =
       match e1_mod_type with
-      | Mty_functor (_, None, _) -> return []
+      | Mty_functor (Unit, _) -> return []
       | _ ->
         let* e2 =
           of_module_expr typ_vars e2 expected_module_typ_for_e2 in
@@ -1128,7 +1126,7 @@ and of_structure
           SideEffect
           "Exception not handled"
       | Tstr_module { mb_id; mb_expr; _ } ->
-        let* name = Name.of_ident false mb_id in
+        let* name = Name.of_optional_ident false mb_id in
         of_module_expr
           typ_vars mb_expr (Some mb_expr.mod_type) >>= fun value ->
         return (LetVar (None, name, [], value, e_next))
